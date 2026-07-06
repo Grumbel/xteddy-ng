@@ -24,11 +24,11 @@
           ];
 
           buildInputs = with pkgs; [
-            xorg.libX11
-            xorg.libXrender
-            xorg.libXext
-            xorg.libXcomposite
-            xorg.libXfixes      # pulled in by libXcomposite; listed explicitly
+            libX11
+            libXrender
+            libXext
+            libXcomposite
+            libXfixes      # pulled in by libXcomposite; listed explicitly
             libpng
           ];
 
