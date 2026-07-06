@@ -15,16 +15,14 @@
  * Options:
  *   -pos  +X+Y          initial position  (default: centre of screen)
  *   -scale FACTOR       scale factor, e.g. 0.5 or 2.0  (default: 1.0)
- *   -blend MODE         initial blend mode name (default: Over)
  *   -sticky             stay on top (sets override-redirect)
- *   -help               show this text and list all blend modes
+ *   -help               show this text
  *
  * Interaction (once the window is open):
  *   Left-button drag    move the window
  *   Right-button        quit
  *   Scroll wheel        scale up / down  (10 % per notch)
  *   +  /  -             scale up / down by 10 %
- *   b / B               cycle blend mode forward / backward
  *   q  /  Escape        quit
  */
 
@@ -42,95 +40,6 @@
 #include <X11/extensions/shape.h>
 
 #include <png.h>
-
-/* ------------------------------------------------------------------ */
-/*  Blend-mode table                                                   */
-/* ------------------------------------------------------------------ */
-
-typedef struct {
-    const char *name;
-    int         op;       /* PictOp* constant */
-    const char *desc;
-} BlendMode;
-
-static const BlendMode BLEND_MODES[] = {
-    /* Porter-Duff */
-    { "Clear",              PictOpClear,              "Porter-Duff: Clear"             },
-    { "Src",                PictOpSrc,                "Porter-Duff: Src"               },
-    { "Dst",                PictOpDst,                "Porter-Duff: Dst (no-op)"       },
-    { "Over",               PictOpOver,               "Porter-Duff: Src over Dst"      },
-    { "OverReverse",        PictOpOverReverse,        "Porter-Duff: Dst over Src"      },
-    { "In",                 PictOpIn,                 "Porter-Duff: Src in Dst"        },
-    { "InReverse",          PictOpInReverse,          "Porter-Duff: Dst in Src"        },
-    { "Out",                PictOpOut,                "Porter-Duff: Src out Dst"       },
-    { "OutReverse",         PictOpOutReverse,         "Porter-Duff: Dst out Src"       },
-    { "Atop",               PictOpAtop,               "Porter-Duff: Src atop Dst"      },
-    { "AtopReverse",        PictOpAtopReverse,        "Porter-Duff: Dst atop Src"      },
-    { "Xor",                PictOpXor,                "Porter-Duff: Src xor Dst"       },
-    { "Add",                PictOpAdd,                "Porter-Duff: Add"               },
-    { "Saturate",           PictOpSaturate,           "Porter-Duff: Saturate"          },
-    /* Disjoint */
-    { "DisjointClear",      PictOpDisjointClear,      "Disjoint: Clear"                },
-    { "DisjointSrc",        PictOpDisjointSrc,        "Disjoint: Src"                  },
-    { "DisjointDst",        PictOpDisjointDst,        "Disjoint: Dst"                  },
-    { "DisjointOver",       PictOpDisjointOver,       "Disjoint: Over"                 },
-    { "DisjointOverReverse",PictOpDisjointOverReverse,"Disjoint: OverReverse"          },
-    { "DisjointIn",         PictOpDisjointIn,         "Disjoint: In"                   },
-    { "DisjointInReverse",  PictOpDisjointInReverse,  "Disjoint: InReverse"            },
-    { "DisjointOut",        PictOpDisjointOut,        "Disjoint: Out"                  },
-    { "DisjointOutReverse", PictOpDisjointOutReverse, "Disjoint: OutReverse"           },
-    { "DisjointAtop",       PictOpDisjointAtop,       "Disjoint: Atop"                 },
-    { "DisjointAtopReverse",PictOpDisjointAtopReverse,"Disjoint: AtopReverse"          },
-    { "DisjointXor",        PictOpDisjointXor,        "Disjoint: Xor"                  },
-    /* Conjoint */
-    { "ConjointClear",      PictOpConjointClear,      "Conjoint: Clear"                },
-    { "ConjointSrc",        PictOpConjointSrc,        "Conjoint: Src"                  },
-    { "ConjointDst",        PictOpConjointDst,        "Conjoint: Dst"                  },
-    { "ConjointOver",       PictOpConjointOver,       "Conjoint: Over"                 },
-    { "ConjointOverReverse",PictOpConjointOverReverse,"Conjoint: OverReverse"          },
-    { "ConjointIn",         PictOpConjointIn,         "Conjoint: In"                   },
-    { "ConjointInReverse",  PictOpConjointInReverse,  "Conjoint: InReverse"            },
-    { "ConjointOut",        PictOpConjointOut,        "Conjoint: Out"                  },
-    { "ConjointOutReverse", PictOpConjointOutReverse, "Conjoint: OutReverse"           },
-    { "ConjointAtop",       PictOpConjointAtop,       "Conjoint: Atop"                 },
-    { "ConjointAtopReverse",PictOpConjointAtopReverse,"Conjoint: AtopReverse"          },
-    { "ConjointXor",        PictOpConjointXor,        "Conjoint: Xor"                  },
-    /* SVG / CSS blend modes */
-    { "Multiply",           PictOpMultiply,           "Blend: Multiply"                },
-    { "Screen",             PictOpScreen,             "Blend: Screen"                  },
-    { "Overlay",            PictOpOverlay,            "Blend: Overlay"                 },
-    { "Darken",             PictOpDarken,             "Blend: Darken"                  },
-    { "Lighten",            PictOpLighten,            "Blend: Lighten"                 },
-    { "ColorDodge",         PictOpColorDodge,         "Blend: Color Dodge"             },
-    { "ColorBurn",          PictOpColorBurn,          "Blend: Color Burn"              },
-    { "HardLight",          PictOpHardLight,          "Blend: Hard Light"              },
-    { "SoftLight",          PictOpSoftLight,          "Blend: Soft Light"              },
-    { "Difference",         PictOpDifference,         "Blend: Difference"              },
-    { "Exclusion",          PictOpExclusion,          "Blend: Exclusion"               },
-    { "HSLHue",             PictOpHSLHue,             "Blend: HSL Hue"                 },
-    { "HSLSaturation",      PictOpHSLSaturation,      "Blend: HSL Saturation"          },
-    { "HSLColor",           PictOpHSLColor,           "Blend: HSL Color"               },
-    { "HSLLuminosity",      PictOpHSLLuminosity,      "Blend: HSL Luminosity"          },
-};
-#define N_BLEND_MODES ((int)(sizeof(BLEND_MODES)/sizeof(BLEND_MODES[0])))
-
-/* Lookup by name (case-insensitive).  Returns index or -1. */
-static int blend_find(const char *name)
-{
-    for (int i = 0; i < N_BLEND_MODES; i++) {
-        const char *a = BLEND_MODES[i].name, *b = name;
-        /* strcasecmp without POSIX dependency */
-        int match = 1;
-        while (*a || *b) {
-            char ca = *a >= 'A' && *a <= 'Z' ? (*a|32) : *a;
-            char cb = *b >= 'A' && *b <= 'Z' ? (*b|32) : *b;
-            if (ca != cb) { match = 0; break; }
-            a++; b++;
-        }
-        if (match) return i;
-    }
-    return -1;
-}
 
 /* ------------------------------------------------------------------ */
 /*  RGBA image in host memory                                          */
@@ -367,149 +276,27 @@ static Visual *find_argb32_visual(Display *dpy, int screen, int *depth_out)
 }
 
 /* ------------------------------------------------------------------ */
-/*  Grab desktop background Picture (for blend-against)               */
-/* ------------------------------------------------------------------ */
-
-/*
- * Most blend modes (Multiply, Screen, Difference, …) compute a result
- * that depends on BOTH the source (our PNG) AND the destination (what is
- * already painted on screen behind the window).  Because our window is
- * ARGB and has just been cleared, the destination is always transparent,
- * so the blend never has anything to work against.
- *
- * The fix is a two-step composite:
- *   1.  Render: blend(src, bg)  →  tmp   (an off-screen ARGB pixmap)
- *   2.  Render: tmp  Over  window        (respects the PNG's alpha mask)
- *
- * For the Porter-Duff ops (Src, Over, In, …) step 1 reduces to the
- * same thing as before (bg is transparent ⇒ same result), so correctness
- * is preserved for all modes.
- *
- * We obtain the desktop background pixmap via the _XROOTPMAP_ID atom that
- * virtually every wallpaper setter (feh, nitrogen, xsetroot, swaybg…)
- * publishes.  If that atom is absent we fall back to a solid black fill.
- */
-static Picture get_background_picture(Display *dpy, Window root,
-                                       int screen,
-                                       int wx, int wy,   /* window origin on root */
-                                       int ww, int wh,
-                                       Visual *argb_vis)
-{
-    /* Try to find the root pixmap */
-    Pixmap root_pix = None;
-    const char *atom_names[] = { "_XROOTPMAP_ID", "ESETROOT_PMAP_ID" };
-    for (int a = 0; a < 2 && root_pix == None; a++) {
-        Atom atom = XInternAtom(dpy, atom_names[a], True);
-        if (atom == None) continue;
-        Atom actual_type; int actual_format;
-        unsigned long nitems, bytes_after;
-        unsigned char *prop = NULL;
-        if (XGetWindowProperty(dpy, root, atom, 0, 1, False,
-                               XA_PIXMAP, &actual_type, &actual_format,
-                               &nitems, &bytes_after, &prop) == Success
-            && prop) {
-            root_pix = *(Pixmap *)prop;
-            XFree(prop);
-        }
-    }
-
-    /* Build a depth-32 ARGB temporary pixmap the size of our window */
-    Pixmap tmp = XCreatePixmap(dpy, root, ww, wh, 32);
-    XRenderPictFormat *fmt32 = XRenderFindStandardFormat(dpy, PictStandardARGB32);
-    Picture tmp_pic = XRenderCreatePicture(dpy, tmp, fmt32, 0, NULL);
-    XFreePixmap(dpy, tmp);   /* picture holds a reference */
-
-    if (root_pix != None) {
-        /* Wrap the root pixmap as a Picture at the screen's default depth */
-        XRenderPictFormat *rfmt = XRenderFindVisualFormat(
-                                      dpy, DefaultVisual(dpy, screen));
-        XRenderPictureAttributes pa;
-        pa.repeat = RepeatNormal;   /* tile if smaller than screen */
-        Picture root_pic = XRenderCreatePicture(dpy, root_pix, rfmt,
-                                                CPRepeat, &pa);
-
-        /* Copy the slice of root that sits behind our window into tmp */
-        XRenderComposite(dpy, PictOpSrc,
-                         root_pic, None, tmp_pic,
-                         wx, wy,          /* src x,y within root pixmap */
-                         0, 0,
-                         0, 0,            /* dst x,y */
-                         ww, wh);
-        XRenderFreePicture(dpy, root_pic);
-    } else {
-        /* No wallpaper atom — fill with opaque black */
-        XRenderColor black = { 0, 0, 0, 0xffff };
-        XRenderFillRectangle(dpy, PictOpSrc, tmp_pic, &black, 0, 0, ww, wh);
-    }
-    (void)argb_vis;
-    return tmp_pic;   /* caller must XRenderFreePicture */
-}
-
-/* ------------------------------------------------------------------ */
 /*  Compositing helper                                                 */
 /* ------------------------------------------------------------------ */
 
 static void composite_to_window(Display *dpy, Window win,
                                   Visual *vis,
-                                  int screen,
-                                  Window root,
-                                  int wx, int wy,
                                   int ww, int wh,
-                                  Picture src_pic,
-                                  Visual *argb_vis,
-                                  int blend_op)
+                                  Picture src_pic)
 {
-    /*
-     * Step 1 – blend src onto a copy of the desktop background.
-     *
-     * We create a fresh ARGB32 pixmap ("canvas"), copy the background
-     * into it, then apply the chosen blend op on top.  This gives the
-     * blend modes something meaningful to operate against.
-     *
-     * For Porter-Duff ops the background is still needed as the initial
-     * "Dst" in ops like Over/In/Out/Atop.
-     */
-    Picture bg = get_background_picture(dpy, root, screen,
-                                        wx, wy, ww, wh, argb_vis);
-
-    /* Temporary ARGB canvas = background copy we blend onto */
-    Pixmap canvas_pix = XCreatePixmap(dpy, root, ww, wh, 32);
-    XRenderPictFormat *fmt32 = XRenderFindStandardFormat(dpy, PictStandardARGB32);
-    Picture canvas = XRenderCreatePicture(dpy, canvas_pix, fmt32, 0, NULL);
-    XFreePixmap(dpy, canvas_pix);
-
-    /* Copy bg → canvas with PictOpSrc (initialise destination) */
-    XRenderComposite(dpy, PictOpSrc,
-                     bg, None, canvas,
-                     0, 0, 0, 0, 0, 0, ww, wh);
-
-    /* Apply chosen blend op: src blended onto canvas (which holds bg) */
-    XRenderComposite(dpy, blend_op,
-                     src_pic, None, canvas,
-                     0, 0, 0, 0, 0, 0, ww, wh);
-
-    /*
-     * Step 2 – write result into the window.
-     *
-     * We want the window to be transparent where the PNG is transparent,
-     * and show the blended result where it is opaque/semi-transparent.
-     * Use src_pic as a mask so the PNG's own alpha gates visibility,
-     * then composite the blended canvas Over the cleared window.
-     */
+    /* Destination picture (the window itself) */
     XRenderPictFormat *wfmt = XRenderFindVisualFormat(dpy, vis);
     Picture dst = XRenderCreatePicture(dpy, win, wfmt, 0, NULL);
 
-    /* Clear window to transparent */
+    /* Clear to transparent, then render the source */
     XRenderColor clear = { 0, 0, 0, 0 };
     XRenderFillRectangle(dpy, PictOpSrc, dst, &clear, 0, 0, ww, wh);
 
-    /* Composite canvas into window, masked by the PNG's alpha channel */
-    XRenderComposite(dpy, PictOpOver,
-                     canvas, src_pic, dst,
-                     0, 0, 0, 0, 0, 0, ww, wh);
+    XRenderComposite(dpy, PictOpSrc,
+                     src_pic, None, dst,
+                     0, 0, 0, 0, 0, 0,
+                     ww, wh);
 
-    XRenderFreePicture(dpy, canvas);
-    XRenderFreePicture(dpy, bg);
     XRenderFreePicture(dpy, dst);
 }
 
@@ -534,14 +321,12 @@ typedef struct {
     Picture     pic;
 
     int         win_w, win_h;
-    int         win_x, win_y;   /* current window position on root (for bg sample) */
     double      scale;
-    int         blend_idx;   /* index into BLEND_MODES[] */
 
     /* dragging */
     int         dragging;
     int         drag_x, drag_y;   /* pointer pos at drag start */
-    int         drag_win_x, drag_win_y;    /* window pos at drag start */
+    int         win_x,  win_y;    /* window pos at drag start */
 
     /* atoms */
     Atom        wm_delete;
@@ -613,32 +398,9 @@ static void rebuild_scaled(App *app)
 
 static void redraw(App *app)
 {
-    /* Refresh window position so background sampling is accurate */
-    {
-        Window child;
-        XTranslateCoordinates(app->dpy, app->win, app->root,
-                              0, 0, &app->win_x, &app->win_y, &child);
-    }
     composite_to_window(app->dpy, app->win, app->vis,
-                        app->screen, app->root,
-                        app->win_x, app->win_y,
-                        app->win_w, app->win_h,
-                        app->pic,
-                        app->vis,   /* argb_vis — same visual */
-                        BLEND_MODES[app->blend_idx].op);
+                        app->win_w, app->win_h, app->pic);
     XFlush(app->dpy);
-}
-
-/* Set blend mode by index and print a one-line status to stdout */
-static void blend_set(App *app, int idx)
-{
-    app->blend_idx = idx;
-    printf("blend: [%2d/%d] %-24s  %s\n",
-           idx + 1, N_BLEND_MODES,
-           BLEND_MODES[idx].name,
-           BLEND_MODES[idx].desc);
-    fflush(stdout);
-    redraw(app);
 }
 
 /* ------------------------------------------------------------------ */
@@ -653,23 +415,16 @@ static void usage(const char *prog)
         "Options:\n"
         "  -pos  +X+Y      initial window position (default: centred)\n"
         "  -scale FACTOR   initial scale factor   (default: 1.0)\n"
-        "  -blend MODE     initial blend mode     (default: Over)\n"
         "  -sticky         stay on top of other windows\n"
-        "  -help           show this message and list blend modes\n"
+        "  -help           show this message\n"
         "\n"
         "Interaction:\n"
         "  Left-drag       move window\n"
         "  Right-click     quit\n"
         "  Scroll up/down  zoom in / out  (10 %% per notch)\n"
         "  + / -           zoom in / out  (10 %% per key)\n"
-        "  b / B           cycle blend mode forward / backward\n"
-        "  q / Escape      quit\n"
-        "\n"
-        "Blend modes:\n",
+        "  q / Escape      quit\n",
         prog);
-    for (int i = 0; i < N_BLEND_MODES; i++)
-        fprintf(stderr, "  %-26s %s\n",
-                BLEND_MODES[i].name, BLEND_MODES[i].desc);
 }
 
 /* ------------------------------------------------------------------ */
@@ -683,7 +438,6 @@ int main(int argc, char **argv)
     int         init_x    = -1, init_y = -1;
     int         sticky    = 0;
     int         has_pos   = 0;
-    int         blend_idx = blend_find("Over");  /* default: Over */
 
     /* Parse arguments (simple hand-rolled parser, no getopt_long dep) */
     for (int i = 1; i < argc; i++) {
@@ -694,14 +448,6 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[i], "-scale") && i+1 < argc) {
             scale = atof(argv[++i]);
             if (scale < 0.05) scale = 0.05;
-        } else if (!strcmp(argv[i], "-blend") && i+1 < argc) {
-            int idx = blend_find(argv[++i]);
-            if (idx < 0) {
-                fprintf(stderr, "Unknown blend mode '%s'. Use -help to list modes.\n",
-                        argv[i]);
-                return 1;
-            }
-            blend_idx = idx;
         } else if (!strcmp(argv[i], "-pos") && i+1 < argc) {
             /* accept +X+Y or X,Y */
             const char *p = argv[++i];
@@ -728,8 +474,7 @@ int main(int argc, char **argv)
     /* Load image */
     App app;
     memset(&app, 0, sizeof(app));
-    app.scale     = scale;
-    app.blend_idx = blend_idx;
+    app.scale = scale;
 
     if (load_png(png_path, &app.orig) != 0) {
         fprintf(stderr, "Failed to load '%s'\n", png_path);
@@ -859,16 +604,13 @@ int main(int argc, char **argv)
         } else if (e.type == ButtonPress) {
             if (e.xbutton.button == Button1) {
                 /* start drag */
-                app.dragging   = 1;
-                app.drag_x     = e.xbutton.x_root;
-                app.drag_y     = e.xbutton.y_root;
-                /* snapshot window position */
+                app.dragging = 1;
+                app.drag_x   = e.xbutton.x_root;
+                app.drag_y   = e.xbutton.y_root;
+                /* get current window position */
                 Window child;
                 XTranslateCoordinates(app.dpy, app.win, app.root,
-                                      0, 0, &app.drag_win_x, &app.drag_win_y,
-                                      &child);
-                app.win_x = app.drag_win_x;
-                app.win_y = app.drag_win_y;
+                                      0, 0, &app.win_x, &app.win_y, &child);
                 XDefineCursor(app.dpy, app.win,
                     XCreateFontCursor(app.dpy, 52 /* XC_fleur */));
             } else if (e.xbutton.button == Button3) {
@@ -897,9 +639,7 @@ int main(int argc, char **argv)
                 int dx = e.xmotion.x_root - app.drag_x;
                 int dy = e.xmotion.y_root - app.drag_y;
                 XMoveWindow(app.dpy, app.win,
-                            app.drag_win_x + dx, app.drag_win_y + dy);
-                /* Redraw so background sampling tracks the new position */
-                redraw(&app);
+                            app.win_x + dx, app.win_y + dy);
             }
 
         } else if (e.type == KeyPress) {
@@ -915,17 +655,10 @@ int main(int argc, char **argv)
                 if (app.scale < 0.05) app.scale = 0.05;
                 rebuild_scaled(&app);
                 redraw(&app);
-            } else if (ks == XK_b) {
-                /* cycle forward */
-                blend_set(&app, (app.blend_idx + 1) % N_BLEND_MODES);
-            } else if (ks == XK_B) {
-                /* cycle backward */
-                blend_set(&app, (app.blend_idx + N_BLEND_MODES - 1) % N_BLEND_MODES);
             }
 
         } else if (e.type == ConfigureNotify) {
-            /* Window was moved/resized by WM — resample the background */
-            redraw(&app);
+            /* nothing special needed */
         }
     }
 
