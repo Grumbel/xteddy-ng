@@ -1,3 +1,5 @@
+![xteddy-ng](xteddy-ng.png)
+
 # xpng — a modern xteddy replacement
 
 A lightweight X11 desktop companion that displays any PNG with **real
