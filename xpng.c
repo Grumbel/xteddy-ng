@@ -371,119 +371,78 @@ static Visual *find_argb32_visual(Display *dpy, int screen, int *depth_out)
 /* ------------------------------------------------------------------ */
 
 /*
- * Returns an ARGB32 Picture containing the pixels currently on screen
- * behind our window, for use as the blend destination.
+ * Most blend modes (Multiply, Screen, Difference, …) compute a result
+ * that depends on BOTH the source (our PNG) AND the destination (what is
+ * already painted on screen behind the window).  Because our window is
+ * ARGB and has just been cleared, the destination is always transparent,
+ * so the blend never has anything to work against.
  *
- * XCompositeNameWindowPixmap is NOT used: it requires the target window
- * to be explicitly redirected with XCompositeRedirectWindow first.
- * Calling it on the root window unconditionally raises BadMatch.
+ * The fix is a two-step composite:
+ *   1.  Render: blend(src, bg)  →  tmp   (an off-screen ARGB pixmap)
+ *   2.  Render: tmp  Over  window        (respects the PNG's alpha mask)
  *
- * Strategy:
- *  1. _XROOTPMAP_ID / ESETROOT_PMAP_ID — zero-copy pixmap reference
- *     published by feh, nitrogen, xsetroot, etc.
- *  2. XGetImage on the root — direct framebuffer read; always works.
- *  3. Mid-grey fallback.
+ * For the Porter-Duff ops (Src, Over, In, …) step 1 reduces to the
+ * same thing as before (bg is transparent ⇒ same result), so correctness
+ * is preserved for all modes.
  *
- * The returned picture always has alpha=0xffff (opaque) on every pixel.
- * RGB24 sources leave alpha=0 after blit into ARGB32; ops like Xor and
- * Add read Dst.alpha, so we enforce opaque alpha via PictOpAdd.
+ * We obtain the desktop background pixmap via the _XROOTPMAP_ID atom that
+ * virtually every wallpaper setter (feh, nitrogen, xsetroot, swaybg…)
+ * publishes.  If that atom is absent we fall back to a solid black fill.
  */
 static Picture get_background_picture(Display *dpy, Window root,
                                        int screen,
-                                       int wx, int wy,
-                                       int ww, int wh)
+                                       int wx, int wy,   /* window origin on root */
+                                       int ww, int wh,
+                                       Visual *argb_vis)
 {
+    /* Try to find the root pixmap */
+    Pixmap root_pix = None;
+    const char *atom_names[] = { "_XROOTPMAP_ID", "ESETROOT_PMAP_ID" };
+    for (int a = 0; a < 2 && root_pix == None; a++) {
+        Atom atom = XInternAtom(dpy, atom_names[a], True);
+        if (atom == None) continue;
+        Atom actual_type; int actual_format;
+        unsigned long nitems, bytes_after;
+        unsigned char *prop = NULL;
+        if (XGetWindowProperty(dpy, root, atom, 0, 1, False,
+                               XA_PIXMAP, &actual_type, &actual_format,
+                               &nitems, &bytes_after, &prop) == Success
+            && prop) {
+            root_pix = *(Pixmap *)prop;
+            XFree(prop);
+        }
+    }
+
+    /* Build a depth-32 ARGB temporary pixmap the size of our window */
+    Pixmap tmp = XCreatePixmap(dpy, root, ww, wh, 32);
     XRenderPictFormat *fmt32 = XRenderFindStandardFormat(dpy, PictStandardARGB32);
-    Pixmap  out_pix = XCreatePixmap(dpy, root, ww, wh, 32);
-    Picture out_pic = XRenderCreatePicture(dpy, out_pix, fmt32, 0, NULL);
-    XFreePixmap(dpy, out_pix);
+    Picture tmp_pic = XRenderCreatePicture(dpy, tmp, fmt32, 0, NULL);
+    XFreePixmap(dpy, tmp);   /* picture holds a reference */
 
-    int got = 0;
+    if (root_pix != None) {
+        /* Wrap the root pixmap as a Picture at the screen's default depth */
+        XRenderPictFormat *rfmt = XRenderFindVisualFormat(
+                                      dpy, DefaultVisual(dpy, screen));
+        XRenderPictureAttributes pa;
+        pa.repeat = RepeatNormal;   /* tile if smaller than screen */
+        Picture root_pic = XRenderCreatePicture(dpy, root_pix, rfmt,
+                                                CPRepeat, &pa);
 
-    /* ── 1. Root pixmap atom ─────────────────────────────────────────── */
-    if (!got) {
-        Pixmap root_pix = None;
-        const char *anames[] = { "_XROOTPMAP_ID", "ESETROOT_PMAP_ID" };
-        for (int a = 0; a < 2 && !root_pix; a++) {
-            Atom atom = XInternAtom(dpy, anames[a], True);
-            if (atom == None) continue;
-            Atom rtype; int rfmt_; unsigned long n, ba;
-            unsigned char *prop = NULL;
-            if (XGetWindowProperty(dpy, root, atom, 0, 1, False,
-                                   XA_PIXMAP, &rtype, &rfmt_,
-                                   &n, &ba, &prop) == Success && prop) {
-                root_pix = *(Pixmap *)prop;
-                XFree(prop);
-            }
-        }
-        if (root_pix) {
-            XRenderPictFormat *rfmt =
-                XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
-            if (rfmt) {
-                XRenderPictureAttributes pa = { .repeat = RepeatNormal };
-                Picture rp = XRenderCreatePicture(dpy, root_pix, rfmt,
-                                                   CPRepeat, &pa);
-                XRenderComposite(dpy, PictOpSrc, rp, None, out_pic,
-                                 wx, wy, 0, 0, 0, 0, ww, wh);
-                XRenderFreePicture(dpy, rp);
-                got = 1;
-            }
-        }
+        /* Copy the slice of root that sits behind our window into tmp */
+        XRenderComposite(dpy, PictOpSrc,
+                         root_pic, None, tmp_pic,
+                         wx, wy,          /* src x,y within root pixmap */
+                         0, 0,
+                         0, 0,            /* dst x,y */
+                         ww, wh);
+        XRenderFreePicture(dpy, root_pic);
+    } else {
+        /* No wallpaper atom — fill with opaque black */
+        XRenderColor black = { 0, 0, 0, 0xffff };
+        XRenderFillRectangle(dpy, PictOpSrc, tmp_pic, &black, 0, 0, ww, wh);
     }
-
-    /* ── 2. XGetImage readback ──────────────────────────────────────── */
-    if (!got) {
-        int sw = DisplayWidth(dpy, screen);
-        int sh = DisplayHeight(dpy, screen);
-        int rx = wx < 0 ? 0 : wx,  ry = wy < 0 ? 0 : wy;
-        int rw = ww - (rx - wx),   rh = wh - (ry - wy);
-        if (rx + rw > sw) rw = sw - rx;
-        if (ry + rh > sh) rh = sh - ry;
-        if (rw > 0 && rh > 0) {
-            XImage *xi = XGetImage(dpy, root, rx, ry, rw, rh,
-                                   AllPlanes, ZPixmap);
-            if (xi) {
-                int ddepth = DefaultDepth(dpy, screen);
-                Pixmap tmp = XCreatePixmap(dpy, root, rw, rh, ddepth);
-                GC gc = XCreateGC(dpy, tmp, 0, NULL);
-                XPutImage(dpy, tmp, gc, xi, 0, 0, 0, 0, rw, rh);
-                XFreeGC(dpy, gc);
-                XDestroyImage(xi);
-                XRenderPictFormat *rfmt =
-                    XRenderFindVisualFormat(dpy, DefaultVisual(dpy, screen));
-                if (rfmt) {
-                    Picture tp = XRenderCreatePicture(dpy, tmp, rfmt, 0, NULL);
-                    XRenderComposite(dpy, PictOpSrc, tp, None, out_pic,
-                                     0, 0, 0, 0, rx - wx, ry - wy, rw, rh);
-                    XRenderFreePicture(dpy, tp);
-                    got = 1;
-                }
-                XFreePixmap(dpy, tmp);
-            }
-        }
-    }
-
-    /* ── 3. Mid-grey fallback ───────────────────────────────────────── */
-    if (!got) {
-        XRenderColor grey = { 0x8000, 0x8000, 0x8000, 0xffff };
-        XRenderFillRectangle(dpy, PictOpSrc, out_pic, &grey, 0, 0, ww, wh);
-        got = 1;
-    }
-
-    /*
-     * Ensure alpha = 1.0 on every pixel.
-     * RGB24 sources leave A=0 in the ARGB32 pixmap after blit.
-     * PictOpAdd with (R=G=B=0, A=0xffff): A = min(1, 0 + A_dst_was).
-     * For A_dst=0 → 0xffff; for A_dst=0xffff already → stays 0xffff.
-     * RGB channels untouched since src RGB = 0.
-     */
-    (void)got;
-    {
-        XRenderColor fix = { 0, 0, 0, 0xffff };
-        XRenderFillRectangle(dpy, PictOpAdd, out_pic, &fix, 0, 0, ww, wh);
-    }
-
-    return out_pic;
+    (void)argb_vis;
+    return tmp_pic;   /* caller must XRenderFreePicture */
 }
 
 /* ------------------------------------------------------------------ */
@@ -497,67 +456,56 @@ static void composite_to_window(Display *dpy, Window win,
                                   int wx, int wy,
                                   int ww, int wh,
                                   Picture src_pic,
+                                  Visual *argb_vis,
                                   int blend_op)
 {
-    XRenderPictFormat *fmt32 = XRenderFindStandardFormat(dpy, PictStandardARGB32);
-
-    /* ── Destination: the window itself ──────────────────────────────── */
-    XRenderPictFormat *wfmt = XRenderFindVisualFormat(dpy, vis);
-    Picture dst = XRenderCreatePicture(dpy, win, wfmt, 0, NULL);
-
-    /* Clear window to fully transparent */
-    XRenderColor clear = { 0, 0, 0, 0 };
-    XRenderFillRectangle(dpy, PictOpSrc, dst, &clear, 0, 0, ww, wh);
-
-    /* ── Background: live screen content behind the window ───────────── */
-    Picture bg = get_background_picture(dpy, root, screen, wx, wy, ww, wh);
-
     /*
-     * The background picture comes from an RGB24 source (the screen).
-     * Its ARGB32 copy has alpha=0 because RGB24→ARGB32 doesn't set alpha.
-     * Force alpha to fully opaque so that blend ops that read Dst.alpha
-     * (Xor, Add, Atop, etc.) get the right value.
+     * Step 1 – blend src onto a copy of the desktop background.
+     *
+     * We create a fresh ARGB32 pixmap ("canvas"), copy the background
+     * into it, then apply the chosen blend op on top.  This gives the
+     * blend modes something meaningful to operate against.
+     *
+     * For Porter-Duff ops the background is still needed as the initial
+     * "Dst" in ops like Over/In/Out/Atop.
      */
-    {
-        /* Create a solid-white alpha channel overlay and paint it into bg
-           using PictOpAdd on the alpha channel only — easiest way is to
-           fill with a colour that has A=1, R=G=B=0 using PictOpAdd.
-           Since bg currently has A=0, adding (A=0xffff,RGB=0) gives A=0xffff. */
-        XRenderColor opaque_alpha = { 0, 0, 0, 0xffff };
-        /* PictOpAdd: dst = min(1, src + dst) — sets A channel to 1.0,
-           leaves RGB unchanged since src RGB = 0. */
-        XRenderFillRectangle(dpy, PictOpAdd, bg, &opaque_alpha, 0, 0, ww, wh);
-    }
+    Picture bg = get_background_picture(dpy, root, screen,
+                                        wx, wy, ww, wh, argb_vis);
 
-    /*
-     * Canvas: off-screen ARGB32 pixmap we blend into.
-     * Initialise with bg so blend ops have the desktop as Dst.
-     */
+    /* Temporary ARGB canvas = background copy we blend onto */
     Pixmap canvas_pix = XCreatePixmap(dpy, root, ww, wh, 32);
+    XRenderPictFormat *fmt32 = XRenderFindStandardFormat(dpy, PictStandardARGB32);
     Picture canvas = XRenderCreatePicture(dpy, canvas_pix, fmt32, 0, NULL);
     XFreePixmap(dpy, canvas_pix);
 
-    /* canvas = bg  (Dst for the blend) */
-    XRenderComposite(dpy, PictOpSrc, bg, None, canvas,
+    /* Copy bg → canvas with PictOpSrc (initialise destination) */
+    XRenderComposite(dpy, PictOpSrc,
+                     bg, None, canvas,
                      0, 0, 0, 0, 0, 0, ww, wh);
 
-    /* Apply blend: canvas = blend_op(src, canvas) */
-    XRenderComposite(dpy, blend_op, src_pic, None, canvas,
+    /* Apply chosen blend op: src blended onto canvas (which holds bg) */
+    XRenderComposite(dpy, blend_op,
+                     src_pic, None, canvas,
                      0, 0, 0, 0, 0, 0, ww, wh);
 
     /*
-     * Write canvas → window.
+     * Step 2 – write result into the window.
      *
-     * We do NOT use src_pic as a mask here.  The blend op has already
-     * computed the correct alpha in canvas (e.g. Add produces alpha > bg
-     * alpha where the PNG is opaque; Xor cancels alpha where both are
-     * opaque).  Masking again with src_pic would double-apply the PNG's
-     * alpha and break ops like Add, Xor, and Atop.
-     *
-     * XShape already punches out fully-transparent pixels so clicks
-     * pass through — we just need to get the pixels into the window.
+     * We want the window to be transparent where the PNG is transparent,
+     * and show the blended result where it is opaque/semi-transparent.
+     * Use src_pic as a mask so the PNG's own alpha gates visibility,
+     * then composite the blended canvas Over the cleared window.
      */
-    XRenderComposite(dpy, PictOpSrc, canvas, None, dst,
+    XRenderPictFormat *wfmt = XRenderFindVisualFormat(dpy, vis);
+    Picture dst = XRenderCreatePicture(dpy, win, wfmt, 0, NULL);
+
+    /* Clear window to transparent */
+    XRenderColor clear = { 0, 0, 0, 0 };
+    XRenderFillRectangle(dpy, PictOpSrc, dst, &clear, 0, 0, ww, wh);
+
+    /* Composite canvas into window, masked by the PNG's alpha channel */
+    XRenderComposite(dpy, PictOpOver,
+                     canvas, src_pic, dst,
                      0, 0, 0, 0, 0, 0, ww, wh);
 
     XRenderFreePicture(dpy, canvas);
@@ -676,6 +624,7 @@ static void redraw(App *app)
                         app->win_x, app->win_y,
                         app->win_w, app->win_h,
                         app->pic,
+                        app->vis,   /* argb_vis — same visual */
                         BLEND_MODES[app->blend_idx].op);
     XFlush(app->dpy);
 }
