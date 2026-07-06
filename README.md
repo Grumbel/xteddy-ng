@@ -1,6 +1,6 @@
 ![xteddy-ng](xteddy-ng.png)
 
-# xpng — a modern xteddy replacement
+# xteddy-ng — a modern xteddy replacement
 
 A lightweight X11 desktop companion that displays any PNG with **real
 8-bit per-channel alpha compositing**.  Transparent and semi-transparent
@@ -41,14 +41,14 @@ sudo apt-get install libx11-dev libxrender-dev libxext-dev \
 ```
 make
 # or explicitly:
-gcc -O2 -o xpng xpng.c \
+gcc -O2 -o xteddy-ng xteddy-ng.c \
     $(pkg-config --cflags --libs x11 xrender xext xcomposite libpng) -lm
 ```
 
 ## Usage
 
 ```
-xpng [options] <image.png>
+xteddy-ng [options] <image.png>
 ```
 
 ### Options
@@ -74,13 +74,13 @@ xpng [options] <image.png>
 
 ```sh
 # show an icon at native size, centred
-xpng icon.png
+xteddy-ng icon.png
 
 # show a mascot at half size in the top-right corner, always on top
-xpng -scale 0.5 -sticky -pos +1400+50 mascot.png
+xteddy-ng -scale 0.5 -sticky -pos +1400+50 mascot.png
 
 # double-size tux
-xpng -scale 2.0 tux.png
+xteddy-ng -scale 2.0 tux.png
 ```
 
 ## How it works
@@ -100,7 +100,7 @@ xpng -scale 2.0 tux.png
 
 ## Differences from classic xteddy
 
-| xteddy | xpng |
+| xteddy | xteddy-ng |
 |---|---|
 | 1-bit mask (XShape only) | Full 8-bit alpha via XRender |
 | Hardcoded bear image | Any PNG from the command line |

@@ -1,5 +1,5 @@
 {
-  description = "xpng — a modern xteddy replacement with real RGBA alpha compositing";
+  description = "xteddy-ng — a modern xteddy replacement with real RGBA alpha compositing";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -14,7 +14,7 @@
       {
         # ── package ──────────────────────────────────────────────────────────
         packages.default = pkgs.stdenv.mkDerivation {
-          pname   = "xpng";
+          pname   = "xteddy-ng";
           version = "1.0.0";
 
           src = ./.;
@@ -35,25 +35,25 @@
           buildPhase = ''
             gcc -O2 -Wall -Wextra -std=c11 \
               $(pkg-config --cflags x11 xrender xext xcomposite libpng) \
-              -o xpng xpng.c \
+              -o xteddy-ng main.c \
               $(pkg-config --libs   x11 xrender xext xcomposite libpng) \
               -lm
           '';
 
           installPhase = ''
-            install -Dm755 xpng $out/bin/xpng
+            install -Dm755 xteddy-ng $out/bin/xteddy-ng
           '';
 
           meta = with pkgs.lib; {
             description     = "Display a PNG with real 8-bit RGBA alpha on X11 (modern xteddy)";
             longDescription = ''
-              xpng is a lightweight X11 desktop companion that uses XRender to
+              xteddy-ng is a lightweight X11 desktop companion that uses XRender to
               display any PNG file with full 8-bit per-channel alpha compositing.
               Transparent and semi-transparent pixels let the desktop show through.
               Supports live bilinear rescaling via the scroll wheel, drag-to-move,
               and an optional always-on-top mode.
             '';
-            homepage    = "https://github.com/example/xpng";
+            homepage    = "https://github.com/example/xteddy-ng";
             license     = licenses.mit;
             maintainers = [ ];
             platforms   = platforms.linux;
@@ -63,12 +63,12 @@
         # ── app (nix run) ─────────────────────────────────────────────────
         apps.default = {
           type    = "app";
-          program = "${self.packages.${system}.default}/bin/xpng";
+          program = "${self.packages.${system}.default}/bin/xteddy-ng";
         };
 
         # ── dev shell ─────────────────────────────────────────────────────
         devShells.default = pkgs.mkShell {
-          name = "xpng-dev";
+          name = "xteddy-ng-dev";
 
           packages = with pkgs; [
             gcc
@@ -87,7 +87,7 @@
           ];
 
           shellHook = ''
-            echo "xpng dev shell — build with: make"
+            echo "xteddy-ng dev shell — build with: make"
           '';
         };
       }
@@ -97,10 +97,10 @@
     // {
       nixosModules.default = { config, lib, pkgs, ... }:
         let
-          cfg = config.programs.xpng;
+          cfg = config.programs.xteddy-ng;
         in {
-          options.programs.xpng = {
-            enable = lib.mkEnableOption "xpng — RGBA PNG viewer for X11";
+          options.programs.xteddy-ng = {
+            enable = lib.mkEnableOption "xteddy-ng — RGBA PNG viewer for X11";
           };
 
           config = lib.mkIf cfg.enable {

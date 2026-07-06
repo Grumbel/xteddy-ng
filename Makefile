@@ -4,13 +4,13 @@ CFLAGS  = -O2 -Wall -Wextra -std=c11 \
 LDFLAGS = $(shell pkg-config --libs   x11 xrender xext xcomposite libpng) \
           -lXext -lm
 
-TARGET  = xpng
+TARGET  = xteddy-ng
 
 .PHONY: all clean install
 
 all: $(TARGET)
 
-$(TARGET): xpng.c
+$(TARGET): xteddy-ng.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 clean:
